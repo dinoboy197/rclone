@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"syscall"
 
 	fusefs "github.com/hanwen/go-fuse/v2/fs"
@@ -144,6 +145,29 @@ func (f *FileHandle) Setattr(ctx context.Context, in *fuse.SetAttrIn, out *fuse.
 		}
 		out.Attr.Mtime = uint64(mtime.Unix())
 		out.Attr.Mtimensec = uint32(mtime.Nanosecond())
+	}
+	if f.h.Node().VFS().Opt.Permissions {
+		if mode, ok := in.GetMode(); ok {
+			err = f.h.Node().VFS().Chmod(f.h.Node().Path(), os.FileMode(mode))
+			if err != nil {
+				return translateError(err)
+			}
+		}
+		uid, uidOK := in.GetUID()
+		gid, gidOK := in.GetGID()
+		if uidOK || gidOK {
+			u, g := -1, -1
+			if uidOK {
+				u = int(uid)
+			}
+			if gidOK {
+				g = int(gid)
+			}
+			err = f.h.Node().VFS().Chown(f.h.Node().Path(), u, g)
+			if err != nil {
+				return translateError(err)
+			}
+		}
 	}
 	return 0
 }

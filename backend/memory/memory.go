@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path"
 	"strings"
 	"sync"
@@ -29,12 +30,30 @@ var (
 	errWriteOnly = errors.New("can't read when using --memory-discard")
 )
 
+// system metadata keys which this backend owns
+var systemMetadataInfo = map[string]fs.MetadataHelp{
+	"content-type": {
+		Help:    "The content type of the file",
+		Type:    "string",
+		Example: "text/plain",
+	},
+	"mtime": {
+		Help:    "Time of last modification",
+		Type:    "RFC 3339",
+		Example: "2006-01-02T15:04:05.999999999Z07:00",
+	},
+}
+
 // Register with Fs
 func init() {
 	fs.Register(&fs.RegInfo{
 		Name:        "memory",
 		Description: "In memory object storage system.",
 		NewFs:       NewFs,
+		MetadataInfo: &fs.MetadataInfo{
+			System: systemMetadataInfo,
+			Help:   "All metadata is stored in memory and is lost when the process exits.",
+		},
 		Options: []fs.Option{{
 			Name:     "discard",
 			Default:  false,
@@ -185,6 +204,7 @@ type objectData struct {
 	modTime  time.Time
 	hash     string
 	mimeType string
+	metadata fs.Metadata
 	data     []byte
 	size     int64
 }
@@ -257,10 +277,14 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	}
 	f.setRoot(root)
 	f.features = (&fs.Features{
-		ReadMimeType:      true,
-		WriteMimeType:     true,
-		BucketBased:       true,
-		BucketBasedRootOK: true,
+		ReadMimeType:          true,
+		WriteMimeType:         true,
+		BucketBased:           true,
+		BucketBasedRootOK:     true,
+		ReadMetadata:          true,
+		WriteMetadata:         true,
+		UserMetadata:          true,
+		PermissionsInMetadata: true,
 	}).Fill(ctx, f)
 	if f.rootBucket != "" && f.rootDirectory != "" {
 		od := buckets.getObjectData(f.rootBucket, f.rootDirectory)
@@ -547,6 +571,22 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return nil, fs.ErrorObjectNotFound
 	}
 	odCopy := *od
+	// copy the metadata over, applying any --metadata-set
+	metadata, err := fs.GetMetadataOptions(ctx, f, src, fs.MetadataAsOpenOptions(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("could not copy: %w", err)
+	}
+	if metadata != nil {
+		if mtime, ok := metadata["mtime"]; ok {
+			if t, err := time.Parse(time.RFC3339Nano, mtime); err == nil {
+				odCopy.modTime = t
+			}
+		}
+		if contentType, ok := metadata["content-type"]; ok {
+			odCopy.mimeType = contentType
+		}
+		odCopy.metadata = metadata
+	}
 	buckets.updateObjectData(dstBucket, dstPath, &odCopy)
 	return f.NewObject(ctx, remote)
 }
@@ -664,12 +704,29 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if err != nil {
 		return fmt.Errorf("failed to update memory object: %w", err)
 	}
+	modTime := src.ModTime(ctx)
+	mimeType := fs.MimeType(ctx, src)
+	metadata, err := fs.GetMetadataOptions(ctx, o.fs, src, options)
+	if err != nil {
+		return fmt.Errorf("could not update: %w", err)
+	}
+	if metadata != nil {
+		if mtime, ok := metadata["mtime"]; ok {
+			if t, err := time.Parse(time.RFC3339Nano, mtime); err == nil {
+				modTime = t
+			}
+		}
+		if contentType, ok := metadata["content-type"]; ok {
+			mimeType = contentType
+		}
+	}
 	o.od = &objectData{
 		data:     data,
 		size:     size,
 		hash:     hash,
-		modTime:  src.ModTime(ctx),
-		mimeType: fs.MimeType(ctx, src),
+		modTime:  modTime,
+		mimeType: mimeType,
+		metadata: metadata,
 	}
 	buckets.updateObjectData(bucket, bucketPath, o.od)
 	return nil
@@ -690,13 +747,49 @@ func (o *Object) MimeType(ctx context.Context) string {
 	return o.od.mimeType
 }
 
+// Metadata returns metadata for an object
+//
+// It should return nil if there is no Metadata
+func (o *Object) Metadata(ctx context.Context) (fs.Metadata, error) {
+	if o.od == nil {
+		return nil, nil
+	}
+	metadata := make(fs.Metadata, len(o.od.metadata)+1)
+	maps.Copy(metadata, o.od.metadata)
+	metadata[fs.MetadataKeyMTime] = o.od.modTime.Format(time.RFC3339Nano)
+	return metadata, nil
+}
+
+// SetMetadata sets metadata for an Object
+//
+// It should return fs.ErrorNotImplemented if it can't set metadata
+func (o *Object) SetMetadata(ctx context.Context, metadata fs.Metadata) error {
+	if o.od == nil {
+		return fs.ErrorObjectNotFound
+	}
+	if mtime, ok := metadata[fs.MetadataKeyMTime]; ok {
+		if t, err := time.Parse(time.RFC3339Nano, mtime); err == nil {
+			o.od.modTime = t
+		}
+	}
+	// merge into the existing metadata so a partial update (for example, just the
+	// permissions) doesn't wipe any other user metadata
+	if o.od.metadata == nil {
+		o.od.metadata = make(fs.Metadata, len(metadata))
+	}
+	maps.Copy(o.od.metadata, metadata)
+	return nil
+}
+
 // Check the interfaces are satisfied
 var (
-	_ fs.Fs          = &Fs{}
-	_ fs.Copier      = &Fs{}
-	_ fs.PutStreamer = &Fs{}
-	_ fs.ListRer     = &Fs{}
-	_ fs.ListPer     = &Fs{}
-	_ fs.Object      = &Object{}
-	_ fs.MimeTyper   = &Object{}
+	_ fs.Fs            = &Fs{}
+	_ fs.Copier        = &Fs{}
+	_ fs.PutStreamer   = &Fs{}
+	_ fs.ListRer       = &Fs{}
+	_ fs.ListPer       = &Fs{}
+	_ fs.Object        = &Object{}
+	_ fs.MimeTyper     = &Object{}
+	_ fs.Metadataer    = &Object{}
+	_ fs.SetMetadataer = &Object{}
 )

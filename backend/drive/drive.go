@@ -1423,6 +1423,7 @@ func newFs(ctx context.Context, name, path string, m configmap.Mapper) (*Fs, err
 		UserMetadata:             true,
 		ReadDirMetadata:          true,
 		WriteDirMetadata:         true,
+		PermissionsInMetadata:    true,
 		WriteDirSetModTime:       true,
 		UserDirMetadata:          true,
 		DirModTimeUpdatesOnWrite: false, // FIXME need to check!
@@ -4679,6 +4680,51 @@ func (o *baseObject) Metadata(ctx context.Context) (metadata fs.Metadata, err er
 	return *o.metadata, nil
 }
 
+// SetMetadata sets metadata for an Object
+//
+// It should return fs.ErrorNotImplemented if it can't set metadata
+func (o *baseObject) SetMetadata(ctx context.Context, metadata fs.Metadata) error {
+	// We need the existing properties so we can merge the new metadata
+	// in without wiping any current user metadata. We fetch just the id and
+	// properties rather than all the metadata fields, which is much cheaper
+	// (the permissions and labels fields in particular can be slow to
+	// resolve).
+	info, err := o.fs.getFile(ctx, actualID(o.id), "id,properties")
+	if err != nil {
+		return fmt.Errorf("failed to read object info to set metadata: %w", err)
+	}
+	updateInfo := &drive.File{
+		Properties: info.Properties,
+	}
+	callback, err := o.fs.updateMetadata(ctx, updateInfo, metadata, true, false)
+	if err != nil {
+		return fmt.Errorf("failed to set metadata: %w", err)
+	}
+	var newInfo *drive.File
+	err = o.fs.pacer.Call(func() (bool, error) {
+		var err error
+		newInfo, err = o.fs.svc.Files.Update(actualID(o.id), updateInfo).
+			Fields(partialFields).
+			SupportsAllDrives(true).
+			Context(ctx).Do()
+		return o.fs.shouldRetry(ctx, err)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to set metadata: %w", err)
+	}
+	// Apply any metadata that can only be set after the update
+	// (owner, permissions, labels).
+	if callback != nil {
+		err = callback(ctx, newInfo)
+		if err != nil {
+			return fmt.Errorf("failed to set metadata: %w", err)
+		}
+	}
+	// Any cached metadata is now out of date
+	o.metadata = nil
+	return nil
+}
+
 func (o *documentObject) ext() string {
 	return o.baseObject.remote[len(o.baseObject.remote)-o.extLen:]
 }
@@ -4776,6 +4822,7 @@ var (
 	_ fs.IDer            = (*Object)(nil)
 	_ fs.ParentIDer      = (*Object)(nil)
 	_ fs.Metadataer      = (*Object)(nil)
+	_ fs.SetMetadataer   = (*Object)(nil)
 	_ fs.Object          = (*documentObject)(nil)
 	_ fs.MimeTyper       = (*documentObject)(nil)
 	_ fs.IDer            = (*documentObject)(nil)

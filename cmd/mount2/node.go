@@ -138,6 +138,29 @@ func (n *Node) Setattr(ctx context.Context, f fusefs.FileHandle, in *fuse.SetAtt
 		out.Attr.Mtime = uint64(mtime.Unix())
 		out.Attr.Mtimensec = uint32(mtime.Nanosecond())
 	}
+	if n.node.VFS().Opt.Permissions {
+		if mode, ok := in.GetMode(); ok {
+			err = n.node.VFS().Chmod(n.node.Path(), os.FileMode(mode))
+			if err != nil {
+				return translateError(err)
+			}
+		}
+		uid, uidOK := in.GetUID()
+		gid, gidOK := in.GetGID()
+		if uidOK || gidOK {
+			u, g := -1, -1
+			if uidOK {
+				u = int(uid)
+			}
+			if gidOK {
+				g = int(gid)
+			}
+			err = n.node.VFS().Chown(n.node.Path(), u, g)
+			if err != nil {
+				return translateError(err)
+			}
+		}
+	}
 	return 0
 }
 

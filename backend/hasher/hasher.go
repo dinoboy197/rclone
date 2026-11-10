@@ -172,6 +172,7 @@ func NewFs(ctx context.Context, fsname, rpath string, cmap configmap.Mapper) (fs
 		SetTier:                  true,
 		GetTier:                  true,
 		ReadMetadata:             true,
+		PermissionsInMetadata:    true,
 		WriteMetadata:            true,
 		UserMetadata:             true,
 		ReadDirMetadata:          true,

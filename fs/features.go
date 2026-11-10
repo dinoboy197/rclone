@@ -33,6 +33,7 @@ type Features struct {
 	WriteDirMetadata         bool // can write metadata to directories (implements Directory.SetMetadata)
 	WriteDirSetModTime       bool // can write metadata to directories (implements Directory.SetModTime)
 	UserDirMetadata          bool // can read/write general purpose metadata to/from directories
+	PermissionsInMetadata    bool // can store and read POSIX permissions (mode, uid, gid) in metadata
 	DirModTimeUpdatesOnWrite bool // indicate writing files to a directory updates its modtime
 	FilterAware              bool // can make use of filters if provided for listing
 	PartialUploads           bool // uploaded file can appear incomplete on the fs while it's being uploaded
@@ -388,6 +389,7 @@ func (ft *Features) Mask(ctx context.Context, f Fs) *Features {
 	ft.WriteDirMetadata = ft.WriteDirMetadata && mask.WriteDirMetadata
 	ft.WriteDirSetModTime = ft.WriteDirSetModTime && mask.WriteDirSetModTime
 	ft.UserDirMetadata = ft.UserDirMetadata && mask.UserDirMetadata
+	ft.PermissionsInMetadata = ft.PermissionsInMetadata && mask.PermissionsInMetadata
 	ft.DirModTimeUpdatesOnWrite = ft.DirModTimeUpdatesOnWrite && mask.DirModTimeUpdatesOnWrite
 	ft.CanHaveEmptyDirectories = ft.CanHaveEmptyDirectories && mask.CanHaveEmptyDirectories
 	ft.BucketBased = ft.BucketBased && mask.BucketBased

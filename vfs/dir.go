@@ -42,6 +42,9 @@ type Dir struct {
 	modTimeMu sync.Mutex // protects the following
 	modTime   time.Time
 
+	permsLoaded atomic.Bool    // whether perms has been resolved from metadata
+	perms       permissionInfo // POSIX perms from object metadata (see permsLoaded)
+
 	_virtuals atomic.Int32 // number of virtual directory entries in this directory and children
 }
 
@@ -161,7 +164,65 @@ func (d *Dir) IsDir() bool {
 
 // Mode bits of the directory - satisfies Node interface
 func (d *Dir) Mode() (mode os.FileMode) {
-	return os.FileMode(d.vfs.Opt.DirPerms)
+	d._loadPerms()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	mode = os.FileMode(d.vfs.Opt.DirPerms)
+	if d.perms.hasMode {
+		mode = d.perms.mode | os.ModeDir
+	}
+	return mode
+}
+
+// _loadPerms reads the POSIX permissions from the directory metadata and
+// caches them if the VFS is configured to use them and they haven't been
+// resolved yet.
+//
+// It must be called without the Dir lock held; d.perms is then read under the
+// lock.
+func (d *Dir) _loadPerms() {
+	if !d.vfs.Opt.Permissions || d.entry == nil || d.permsLoaded.Load() {
+		return
+	}
+	pi, _, err := permissionsFromEntry(d.vfs.ctx, d.entry)
+	if err != nil {
+		fs.Debugf(d, "failed to read permissions from metadata: %v", err)
+	}
+	d.mu.Lock()
+	d.perms = pi
+	d.permsLoaded.Store(true)
+	d.mu.Unlock()
+}
+
+// _resetPerms clears any cached permissions so they are re-read from the
+// directory metadata.
+//
+// It must be called with the Dir lock held.
+func (d *Dir) _resetPerms() {
+	d.permsLoaded.Store(false)
+	d.perms = permissionInfo{}
+}
+
+// Uid returns the user ID of the directory - satisfies os.FileInfo/Node
+func (d *Dir) Uid() uint32 {
+	d._loadPerms()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.perms.hasUID {
+		return d.perms.uid
+	}
+	return d.vfs.Opt.UID
+}
+
+// Gid returns the group ID of the directory - satisfies os.FileInfo/Node
+func (d *Dir) Gid() uint32 {
+	d._loadPerms()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.perms.hasGID {
+		return d.perms.gid
+	}
+	return d.vfs.Opt.GID
 }
 
 // Name (base) of the directory - satisfies Node interface

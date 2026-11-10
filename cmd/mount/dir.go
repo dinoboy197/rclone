@@ -32,8 +32,8 @@ var _ fusefs.Node = (*Dir)(nil)
 func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 	defer log.Trace(d, "")("attr=%+v, err=%v", a, &err)
 	a.Valid = time.Duration(d.fsys.opt.AttrTimeout)
-	a.Gid = d.VFS().Opt.GID
-	a.Uid = d.VFS().Opt.UID
+	a.Gid = d.Dir.Gid()
+	a.Uid = d.Dir.Uid()
 	a.Mode = d.Mode()
 	modTime := d.ModTime()
 	a.Atime = modTime
@@ -47,19 +47,32 @@ func (d *Dir) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 // Check interface satisfied
 var _ fusefs.NodeSetattrer = (*Dir)(nil)
 
-// Setattr handles attribute changes from FUSE. Currently supports ModTime only.
+// Setattr handles attribute changes from FUSE. Currently supports ModTime and,
+// when --vfs-permissions is enabled, mode and ownership.
 func (d *Dir) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse.SetattrResponse) (err error) {
 	defer log.Trace(d, "stat=%+v", req)("err=%v", &err)
-	if d.VFS().Opt.NoModTime {
-		return nil
+	if !d.VFS().Opt.NoModTime {
+		if req.Valid.MtimeNow() {
+			err = d.SetModTime(time.Now())
+		} else if req.Valid.Mtime() {
+			err = d.SetModTime(req.Mtime)
+		}
 	}
-
-	if req.Valid.MtimeNow() {
-		err = d.SetModTime(time.Now())
-	} else if req.Valid.Mtime() {
-		err = d.SetModTime(req.Mtime)
+	if err == nil && d.VFS().Opt.Permissions {
+		if req.Valid.Mode() {
+			err = d.VFS().Chmod(d.Path(), req.Mode)
+		}
+		if err == nil && (req.Valid.Uid() || req.Valid.Gid()) {
+			uid, gid := -1, -1
+			if req.Valid.Uid() {
+				uid = int(req.Uid)
+			}
+			if req.Valid.Gid() {
+				gid = int(req.Gid)
+			}
+			err = d.VFS().Chown(d.Path(), uid, gid)
+		}
 	}
-
 	return translateError(err)
 }
 

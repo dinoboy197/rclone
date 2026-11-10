@@ -59,6 +59,9 @@ type File struct {
 	nwriters         atomic.Int32                    // len(writers)
 	appendMode       bool                            // file was opened with O_APPEND
 	isLink           bool                            // file represents a symlink
+
+	permsLoaded atomic.Bool    // whether perms has been resolved from metadata
+	perms       permissionInfo // POSIX perms from object metadata (see permsLoaded)
 }
 
 // newFile creates a new File
@@ -122,17 +125,75 @@ func (f *File) setSymlink() {
 
 // Mode bits of the file or directory - satisfies Node interface
 func (f *File) Mode() (mode os.FileMode) {
+	f._loadPerms()
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	if f.isLink {
 		mode = os.FileMode(f.d.vfs.Opt.LinkPerms)
+		if f.perms.hasMode {
+			mode = f.perms.mode | os.ModeSymlink
+		}
 	} else {
 		mode = os.FileMode(f.d.vfs.Opt.FilePerms)
+		if f.perms.hasMode {
+			mode = f.perms.mode
+		}
 		if f.appendMode {
 			mode |= os.ModeAppend
 		}
 	}
 	return mode
+}
+
+// _loadPerms reads the POSIX permissions from the object metadata and caches
+// them if the VFS is configured to use them and they haven't been resolved
+// yet.
+//
+// It must be called without the File lock held; f.perms is then read under
+// the lock.
+func (f *File) _loadPerms() {
+	if !f.d.vfs.Opt.Permissions || f.o == nil || f.permsLoaded.Load() {
+		return
+	}
+	pi, _, err := permissionsFromEntry(f.ctx, f.o)
+	if err != nil {
+		fs.Debugf(f, "failed to read permissions from metadata: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.perms = pi
+	f.permsLoaded.Store(true)
+}
+
+// _resetPerms clears any cached permissions so they are re-read from the
+// object metadata.
+//
+// It must be called with the File lock held.
+func (f *File) _resetPerms() {
+	f.permsLoaded.Store(false)
+	f.perms = permissionInfo{}
+}
+
+// Uid returns the user ID of the file - satisfies os.FileInfo/Node
+func (f *File) Uid() uint32 {
+	f._loadPerms()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.perms.hasUID {
+		return f.perms.uid
+	}
+	return f.d.vfs.Opt.UID
+}
+
+// Gid returns the group ID of the file - satisfies os.FileInfo/Node
+func (f *File) Gid() uint32 {
+	f._loadPerms()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.perms.hasGID {
+		return f.perms.gid
+	}
+	return f.d.vfs.Opt.GID
 }
 
 // Name (base) of the directory - satisfies Node interface

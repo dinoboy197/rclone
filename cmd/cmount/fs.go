@@ -146,8 +146,8 @@ func (fsys *FS) stat(node vfs.Node, stat *fuse.Stat_t) (errc int) {
 	stat.Ino = node.Inode() // FIXME do we need to set the inode number?
 	stat.Mode = getMode(node)
 	stat.Nlink = 1
-	stat.Uid = fsys.VFS.Opt.UID
-	stat.Gid = fsys.VFS.Opt.GID
+	stat.Uid = node.Uid()
+	stat.Gid = node.Gid()
 	//stat.Rdev
 	stat.Size = int64(Size)
 	t := fuse.NewTimespec(modTime)
@@ -509,17 +509,27 @@ func (fsys *FS) Readlink(path string) (errc int, linkPath string) {
 }
 
 // Chmod changes the permission bits of a file.
+//
+// This is a no-op unless --vfs-permissions is enabled, in which case the mode
+// is stored in the object metadata.
 func (fsys *FS) Chmod(path string, mode uint32) (errc int) {
 	defer log.Trace(path, "mode=0%o", mode)("errc=%d", &errc)
-	// This is a no-op for rclone
-	return 0
+	if !fsys.VFS.Opt.Permissions {
+		return 0
+	}
+	return translateError(fsys.VFS.Chmod(path, os.FileMode(mode)))
 }
 
 // Chown changes the owner and group of a file.
+//
+// This is a no-op unless --vfs-permissions is enabled, in which case the
+// ownership is stored in the object metadata.
 func (fsys *FS) Chown(path string, uid uint32, gid uint32) (errc int) {
 	defer log.Trace(path, "uid=%d, gid=%d", uid, gid)("errc=%d", &errc)
-	// This is a no-op for rclone
-	return 0
+	if !fsys.VFS.Opt.Permissions {
+		return 0
+	}
+	return translateError(fsys.VFS.Chown(path, int(uid), int(gid)))
 }
 
 // Access checks file access permissions.

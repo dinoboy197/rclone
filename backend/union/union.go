@@ -982,6 +982,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		SetTier:                  true,
 		GetTier:                  true,
 		ReadMetadata:             true,
+		PermissionsInMetadata:    true,
 		WriteMetadata:            true,
 		UserMetadata:             true,
 		ReadDirMetadata:          true,

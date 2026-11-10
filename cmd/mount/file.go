@@ -30,8 +30,8 @@ func (f *File) Attr(ctx context.Context, a *fuse.Attr) (err error) {
 	modTime := f.File.ModTime()
 	Size := uint64(f.File.Size())
 	Blocks := (Size + 511) / 512
-	a.Gid = f.VFS().Opt.GID
-	a.Uid = f.VFS().Opt.UID
+	a.Gid = f.File.Gid()
+	a.Uid = f.File.Uid()
 	a.Mode = f.File.Mode() &^ os.ModeAppend
 	a.Size = Size
 	a.Atime = modTime
@@ -54,8 +54,23 @@ func (f *File) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp *fuse
 			err = f.File.SetModTime(time.Now())
 		}
 	}
-	if req.Valid.Size() {
+	if err == nil && req.Valid.Size() {
 		err = f.File.Truncate(int64(req.Size))
+	}
+	if err == nil && f.VFS().Opt.Permissions {
+		if req.Valid.Mode() {
+			err = f.VFS().Chmod(f.File.Path(), req.Mode)
+		}
+		if err == nil && (req.Valid.Uid() || req.Valid.Gid()) {
+			uid, gid := -1, -1
+			if req.Valid.Uid() {
+				uid = int(req.Uid)
+			}
+			if req.Valid.Gid() {
+				gid = int(req.Gid)
+			}
+			err = f.VFS().Chown(f.File.Path(), uid, gid)
+		}
 	}
 	return translateError(err)
 }

@@ -72,9 +72,8 @@ func setAttr(node vfs.Node, attr *fuse.Attr) {
 	Blocks := (Size + BlockSize - 1) / BlockSize
 	modTime := node.ModTime()
 	// set attributes
-	vfs := node.VFS()
-	attr.Owner.Gid = vfs.Opt.GID
-	attr.Owner.Uid = vfs.Opt.UID
+	attr.Owner.Gid = node.Gid()
+	attr.Owner.Uid = node.Uid()
 	attr.Ino = node.Inode()
 	attr.Mode = getMode(node)
 	attr.Size = Size

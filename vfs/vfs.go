@@ -28,6 +28,7 @@ import (
 	"os"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,6 +72,8 @@ type Node interface {
 	SetSys(any)
 	Aux(owner any) any
 	SetAux(owner, value any)
+	Uid() uint32
+	Gid() uint32
 }
 
 // Check interfaces
@@ -791,14 +794,30 @@ func (vfs *VFS) Chtimes(name string, atime time.Time, mtime time.Time) error {
 // its target (like lchmod). It does not follow the link, so it works
 // on symlinks whose target doesn't exist.
 //
-// The VFS doesn't store file permissions so currently this returns
-// ENOSYS if the file exists and ENOENT if it doesn't.
+// When --vfs-permissions is enabled the permissions are stored in the object
+// metadata, so this can change them. It returns ENOSYS if the file exists but
+// can't have its permissions changed and ENOENT if it doesn't.
 func (vfs *VFS) Chmod(name string, mode os.FileMode) error {
-	_, err := vfs.Stat(name)
+	if vfs.Opt.ReadOnly {
+		return EROFS
+	}
+	node, err := vfs.Stat(name)
 	if err != nil {
 		return err
 	}
-	return ENOSYS
+	if !vfs.Opt.Permissions {
+		return ENOSYS
+	}
+	fileType := os.FileMode(0o100000) // regular file
+	if node.IsDir() {
+		fileType = os.FileMode(0o040000)
+	} else if f, ok := node.(*File); ok && f.isLink {
+		fileType = os.FileMode(0o120000)
+	}
+	mode = os.FileMode(uint32(mode)&0o7777) | fileType
+	return vfs.setPermMetadata(node, func(metadata fs.Metadata) {
+		metadata[fs.MetadataKeyMode] = fmt.Sprintf("%0o", uint32(mode))
+	})
 }
 
 // Chown changes the uid and gid of the named file.
@@ -807,14 +826,59 @@ func (vfs *VFS) Chmod(name string, mode os.FileMode) error {
 // not its target (like lchown). It does not follow the link, so it
 // works on symlinks whose target doesn't exist.
 //
-// The VFS doesn't store file ownership so currently this returns
-// ENOSYS if the file exists and ENOENT if it doesn't.
+// When --vfs-permissions is enabled the ownership is stored in the object
+// metadata, so this can change it. It returns ENOSYS if the file exists but
+// can't have its ownership changed and ENOENT if it doesn't. A uid or gid of
+// -1 leaves that field unchanged.
 func (vfs *VFS) Chown(name string, uid, gid int) error {
-	_, err := vfs.Stat(name)
+	if vfs.Opt.ReadOnly {
+		return EROFS
+	}
+	node, err := vfs.Stat(name)
 	if err != nil {
 		return err
 	}
-	return ENOSYS
+	if !vfs.Opt.Permissions {
+		return ENOSYS
+	}
+	return vfs.setPermMetadata(node, func(metadata fs.Metadata) {
+		if uid >= 0 {
+			metadata[fs.MetadataKeyUID] = strconv.Itoa(uid)
+		}
+		if gid >= 0 {
+			metadata[fs.MetadataKeyGID] = strconv.Itoa(gid)
+		}
+	})
+}
+
+// setPermMetadata updates the POSIX permission metadata of the node's object
+// and writes it back with SetMetadata.
+//
+// The update function is called with the current metadata so it can modify the
+// permission keys. It returns ENOSYS if the object can't have its metadata set
+// in place.
+func (vfs *VFS) setPermMetadata(node Node, update func(fs.Metadata)) error {
+	entry := node.DirEntry()
+	setter, ok := entry.(fs.SetMetadataer)
+	if !ok {
+		return ENOSYS
+	}
+	// Send the permission keys that changed and let the backend
+	// merge them into the existing metadata. This avoids a full metadata
+	// read (which on some backends is expensive).
+	metadata := make(fs.Metadata)
+	update(metadata)
+	if err := setter.SetMetadata(vfs.ctx, metadata); err != nil {
+		return err
+	}
+	// Invalidate any cached permissions so they are re-read
+	switch n := node.(type) {
+	case *File:
+		n._resetPerms()
+	case *Dir:
+		n._resetPerms()
+	}
+	return nil
 }
 
 // mkdir creates a new directory with the specified name and permission bits

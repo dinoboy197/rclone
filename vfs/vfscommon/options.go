@@ -175,6 +175,11 @@ var OptionsInfo = fs.Options{{
 	Default: "",
 	Help:    "Set the extension to read metadata from.",
 	Groups:  "VFS",
+}, {
+	Name:    "vfs_permissions",
+	Default: false,
+	Help:    "Read and write file permissions (mode, uid, gid) from object metadata.",
+	Groups:  "VFS",
 }}
 
 func init() {
@@ -216,6 +221,7 @@ type Options struct {
 	DiskSpaceTotalSize fs.SizeSuffix `config:"vfs_disk_space_total_size"`
 	HandleCaching      fs.Duration   `config:"vfs_handle_caching"`     // time to keep handle alive after last close
 	MetadataExtension  string        `config:"vfs_metadata_extension"` // if set respond to files with this extension with metadata
+	Permissions        bool          `config:"vfs_permissions"`        // if set read/write permissions from object metadata
 }
 
 // Opt is the default options modified by the environment variables and command line flags
@@ -228,6 +234,12 @@ func (opt *Options) Init(ctx context.Context) {
 	// Override --vfs-links with --links if set
 	if ci.Links {
 		opt.Links = true
+	}
+
+	// Permissions are read from and written to object metadata, so metadata
+	// support must be enabled for backends to expose it.
+	if opt.Permissions {
+		ci.Metadata = true
 	}
 
 	// Mask the permissions with the umask

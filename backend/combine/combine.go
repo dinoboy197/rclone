@@ -231,6 +231,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (outFs fs
 		SetTier:                  true,
 		GetTier:                  true,
 		ReadMetadata:             true,
+		PermissionsInMetadata:    true,
 		WriteMetadata:            true,
 		UserMetadata:             true,
 		ReadDirMetadata:          true,

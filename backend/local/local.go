@@ -494,6 +494,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		WriteMetadata:            true,
 		ReadDirMetadata:          true,
 		WriteDirMetadata:         true,
+		PermissionsInMetadata:    true,
 		WriteDirSetModTime:       true,
 		UserDirMetadata:          xattrSupported, // can only R/W general purpose metadata if xattrs are supported
 		DirModTimeUpdatesOnWrite: true,

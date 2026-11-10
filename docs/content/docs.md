@@ -782,6 +782,15 @@ The metadata keys `mtime` and `content-type` will take precedence if
 supplied in the metadata over reading the `Content-Type` or
 modification time of the source object.
 
+When a backend supports storing and reading the `mode`, `uid` and
+`gid` keys in metadata (the `PermissionsInMetadata` feature) you can make
+`rclone mount` honor them with the `--vfs-permissions` flag. In that mode the
+file and directory permissions, uid and gid are read from the object
+metadata (falling back to the `--file-perms`, `--dir-perms`, `--uid`
+and `--gid` defaults when they are absent), and `chmod`/`chown` on the
+mount write them back to the metadata. The `mode` is not used to
+decide whether to transfer or compare objects during a sync.
+
 Hashes are not included in system metadata as there is a well defined
 way of reading those already.
 
